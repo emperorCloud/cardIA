@@ -23,6 +23,10 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -120,6 +124,51 @@ export default function Home() {
       ]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      setRecording(false);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        if (blob.size < 1000) return; // ignore accidental taps
+
+        setTranscribing(true);
+        try {
+          const formData = new FormData();
+          formData.append("audio", blob, "message.webm");
+          const res = await fetch("/api/transcribe", { method: "POST", body: formData });
+          const data = await res.json();
+          if (data.text) {
+            setInput((prev) => (prev ? `${prev} ${data.text}` : data.text));
+          }
+        } catch {
+          // Transcription failed silently — user can type instead
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch {
+      alert("Accès au micro refusé ou indisponible.");
     }
   }
 
@@ -267,13 +316,26 @@ export default function Home() {
                   send();
                 }
               }}
-              placeholder="Écrivez votre message..."
+              placeholder={transcribing ? "Transcription en cours..." : "Écrivez votre message..."}
               rows={1}
-              className="max-h-32 flex-1 resize-none bg-transparent py-2 text-sm text-white placeholder:text-white/30 focus:outline-none"
+              disabled={transcribing}
+              className="max-h-32 flex-1 resize-none bg-transparent py-2 text-sm text-white placeholder:text-white/30 focus:outline-none disabled:opacity-50"
             />
             <button
+              type="button"
+              onClick={toggleRecording}
+              disabled={transcribing}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition disabled:opacity-40 ${
+                recording ? "bg-red-500 animate-pulse" : "bg-white/10 hover:bg-white/20"
+              }`}
+              aria-label={recording ? "Arrêter l'enregistrement" : "Message vocal"}
+              title={recording ? "Arrêter l'enregistrement" : "Message vocal"}
+            >
+              {recording ? "⏹" : "🎤"}
+            </button>
+            <button
               type="submit"
-              disabled={loading || !input.trim()}
+              disabled={loading || transcribing || !input.trim()}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-cardia-violet transition disabled:opacity-40"
               aria-label="Envoyer"
             >
@@ -281,7 +343,9 @@ export default function Home() {
             </button>
           </form>
           <p className="mt-2 text-center text-[11px] text-white/30">
-            Jessy peut faire des erreurs. Vérifiez les informations importantes.
+            {recording
+              ? "Enregistrement en cours — cliquez sur ⏹ pour arrêter."
+              : "Jessy peut faire des erreurs. Vérifiez les informations importantes."}
           </p>
         </div>
       </div>

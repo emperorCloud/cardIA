@@ -1,93 +1,129 @@
 # Jessy — Assistant IA CardIA (CARDIT)
 
-Application de chat IA professionnelle, déployable gratuitement sur Vercel :
-- **Groq** pour l'intelligence (Llama 3.3 70B, API gratuite)
-- **Vercel Postgres** pour les comptes utilisateurs et l'historique de conversations
-- **Auth.js (NextAuth v5)** pour l'authentification par e-mail / mot de passe
+Application de chat IA professionnelle sur Vercel :
+- **Groq** pour le texte (Llama 3.3 70B) et la voix (Whisper, gratuit)
+- **Neon** (Postgres) pour comptes utilisateurs et historique de conversations
+- **Auth.js (NextAuth v5)** — connexion par e-mail / mot de passe
+- **SEO / branding** — favicons, image de partage, manifest PWA, métadonnées complètes
+
+Testé sur **Next.js 16** (Turbopack, `proxy.ts`, params async).
 
 ## 1. Clé API Groq (gratuite)
 
-1. https://console.groq.com/keys → crée un compte → **Create API Key**
-2. Copie la clé (`gsk_...`)
+https://console.groq.com/keys → crée un compte → **Create API Key** (`gsk_...`)
 
-## 2. Base de données Vercel Postgres
+## 2. Base de données Neon
 
-1. Sur https://vercel.com, ouvre ton projet → onglet **Storage** → **Create Database** → **Postgres** (propulsé par Neon, gratuit jusqu'à 256 Mo, largement suffisant pour démarrer)
-2. Une fois créée, clique sur **Connect Project** pour la lier à ce projet
-3. En local, récupère les variables générées :
+Vercel a retiré son offre "Vercel Postgres" au profit d'une intégration native
+avec **Neon** — c'est ce que ce projet utilise.
+
+1. Sur ton projet Vercel → **Storage** → **Marketplace** → **Neon** → Create/Connect
+2. En local :
    ```bash
    npm i -g vercel
    vercel link
    vercel env pull .env.local
    ```
-4. Ajoute ta clé Groq et un secret Auth.js dans `.env.local` :
-   ```bash
-   npx auth secret   # génère AUTH_SECRET et l'ajoute à .env.local
-   ```
-   Puis ajoute manuellement `GROQ_API_KEY=gsk_...`
-
-5. Crée les tables (une seule fois) :
+   Cela remplit `DATABASE_URL` automatiquement.
+3. Crée les tables (une seule fois, ou à chaque nouvel environnement) :
    ```bash
    npm install
-   npx tsx scripts/migrate.ts
+   npm run migrate
    ```
 
-## 3. Lancer en local
+## 3. Secret Auth.js
+
+```bash
+npx auth secret
+```
+
+⚠️ Cette commande ajoute une variable **`AUTH_SECRET`** dans `.env.local`.
+Si tu as utilisé un générateur en ligne qui t'a donné plusieurs lignes
+(`BETTER_AUTH_SECRET=`, `AUTH_SECRET=`, `JWT_SECRET=`...), c'est qu'il
+génère pour plusieurs librairies différentes en même temps — **Better Auth**
+est un concurrent d'Auth.js/NextAuth, pas ce qu'on utilise ici. Ne garde que
+la ligne `AUTH_SECRET=...` (ou renomme la variable `BETTER_AUTH_SECRET` en
+`AUTH_SECRET` si tu veux réutiliser la même valeur).
+
+## 4. Lancer en local
 
 ```bash
 npm run dev
 ```
 
-Ouvre http://localhost:3000 → tu seras redirigé vers `/register` pour créer ton premier compte, puis vers le chat.
+http://localhost:3000 → redirection vers `/register` pour créer ton premier
+compte, puis vers le chat.
 
-## 4. Déployer sur Vercel
+## 5. Déployer sur Vercel
 
-1. Pousse ce projet sur GitHub
-2. https://vercel.com/new → importe le dépôt
-3. La base Postgres déjà liée injecte automatiquement ses variables. Ajoute en plus dans **Environment Variables** :
+1. Pousse le projet sur GitHub, importe-le sur https://vercel.com/new
+2. Connecte la base Neon (étape 2) — `DATABASE_URL` est injectée automatiquement
+3. Ajoute dans **Environment Variables** :
    - `GROQ_API_KEY`
    - `AUTH_SECRET`
+   - `NEXT_PUBLIC_SITE_URL` (ex: `https://cardia.cardit.cm`) — utilisée pour les balises SEO/Open Graph
 4. **Deploy**
-5. Une fois déployé, lance la migration contre la base de production :
+5. Lance la migration contre la base de production si ce n'est pas déjà fait :
    ```bash
-   vercel env pull .env.local   # récupère les vraies valeurs de prod
-   npx tsx scripts/migrate.ts
+   vercel env pull .env.local
+   npm run migrate
    ```
+
+## Ce qui a été ajouté pour le branding / SEO
+
+- `app/icon.png`, `app/apple-icon.png`, `app/favicon.ico` — générés aux couleurs
+  CardIA (dégradé bleu `#085FFF` → violet `#685CF6`, marque "IA")
+- `app/opengraph-image.png` / `twitter-image.png` — aperçu de partage sur
+  WhatsApp, LinkedIn, Twitter/X, avec le nom CardIA et la signature CARDIT
+- `app/manifest.ts` — rend l'app installable (PWA) sur mobile, avec icône et
+  couleurs de marque
+- Métadonnées complètes dans `app/layout.tsx` : title/description/keywords,
+  Open Graph, Twitter Card, `robots`, URL canonique
+- Titres dédiés sur `/login` et `/register` (ces pages publiques sont la
+  vitrine indexable de l'app)
+
+Pour remplacer ces visuels par le vrai logo CardIA (celui de ta maquette),
+dépose tes fichiers finaux directement dans `app/icon.png`,
+`app/apple-icon.png`, `app/opengraph-image.png` — Next.js les sert
+automatiquement, aucune autre config à toucher.
+
+## Message vocal
+
+Le bouton 🎤 dans la barre de saisie enregistre la voix (MediaRecorder),
+l'envoie à `/api/transcribe`, qui appelle **Whisper Large v3 Turbo** chez Groq
+(même fournisseur que Jessy, gratuit). Le texte transcrit se place dans le
+champ de saisie — l'utilisateur peut le relire avant d'envoyer.
 
 ## Architecture
 
 ```
 app/
-  login/page.tsx            Écran de connexion (email + mot de passe)
-  register/page.tsx         Création de compte
-  page.tsx                  Interface de chat (sidebar + conversations réelles)
+  login/            page.tsx (metadata) + LoginForm.tsx (client)
+  register/         page.tsx (metadata) + RegisterForm.tsx (client)
+  page.tsx           Interface de chat (sidebar, conversations, vocal)
+  manifest.ts         Manifest PWA
+  icon.png / apple-icon.png / favicon.ico / opengraph-image.png
   api/
-    auth/[...nextauth]/     Handlers Auth.js
-    register/                Création de compte (hash bcrypt)
-    conversations/           Liste / création de conversations
-    conversations/[id]/messages/   Historique d'une conversation
-    chat/route.ts            Appel Groq en streaming + sauvegarde en base
+    auth/[...nextauth]/   Handlers Auth.js
+    register/              Création de compte (hash bcrypt)
+    conversations/          Liste / création de conversations
+    conversations/[id]/messages/   Historique (params async, Next 16)
+    chat/route.ts           Appel Groq texte en streaming + sauvegarde
+    transcribe/route.ts     Appel Groq Whisper pour la voix
 lib/
-  auth.ts                    Config Auth.js (Credentials provider)
-  db.ts                      Requêtes PostgreSQL (@vercel/postgres)
+  auth.ts             Config Auth.js
+  db.ts               Requêtes Neon (@neondatabase/serverless)
 scripts/
-  migrate.ts                 Création du schéma (users, conversations, messages)
-middleware.ts                Protège toutes les pages sauf /login et /register
+  migrate.ts           Création du schéma
+  gen_branding.py       Génère les visuels de marque (favicons, OG image)
+proxy.ts              Protège toutes les pages sauf /login et /register
+                       (remplace middleware.ts, convention Next 16)
 ```
-
-Chaque conversation et chaque message sont liés à l'utilisateur connecté et
-persistés en base — rien n'est perdu au rechargement de la page ou entre deux
-sessions.
-
-## Personnaliser Jessy
-
-- **Personnalité** : `SYSTEM_PROMPT` dans `app/api/chat/route.ts`
-- **Couleurs de marque** : `tailwind.config.ts` (bleu `#085FFF`, violet `#685CF6`, cyan `#06D6A0`, fond sombre `#081020`)
-- **Logo** : composant `components/LogoMark.tsx` — remplaçable par le fichier logo réel dans `public/`
 
 ## Pistes pour la suite
 
 - Mot de passe oublié (envoi d'e-mail de réinitialisation)
 - Vérification d'e-mail à l'inscription
 - Suppression / renommage manuel des conversations
-- Export d'une conversation en PDF
+- Lecture audio des réponses de Jessy (TTS) — Groq n'en propose pas encore,
+  il faudrait un service tiers (ElevenLabs, etc.)
