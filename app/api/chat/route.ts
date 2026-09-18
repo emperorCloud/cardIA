@@ -1,9 +1,13 @@
+// /app/api/chat/route.ts
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { addMessage, getConversation, renameConversationIfDefault } from "@/lib/db";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL = "llama-3.3-70b-versatile";
+const MODEL = process.env.GROQ_MODEL ?? "openai/gpt-oss-120b";
 
 const SYSTEM_PROMPT = `Tu es Jessy, l'assistant IA de CardIA, développé par CARDIT (Centre Africain de Recherche, Développement et Innovation Technologique) à Douala, Cameroun.
 
@@ -67,7 +71,17 @@ export async function POST(req: NextRequest) {
 
   if (!groqRes.ok || !groqRes.body) {
     const errText = await groqRes.text().catch(() => "");
-    return new Response(`Erreur de l'API Groq: ${errText}`, { status: 502 });
+    console.error(
+      "[Groq] Erreur — Status:",
+      groqRes.status,
+      "| Modèle:",
+      MODEL,
+      "| Body:",
+      errText
+    );
+    return new Response(`Erreur de l'API Groq (${groqRes.status}): ${errText}`, {
+      status: 502,
+    });
   }
 
   const encoder = new TextEncoder();
@@ -79,38 +93,42 @@ export async function POST(req: NextRequest) {
       let buffer = "";
       let assistantFullText = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === "[DONE]") continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const data = trimmed.slice(5).trim();
+            if (data === "[DONE]") continue;
 
-          try {
-            const json = JSON.parse(data);
-            const token = json.choices?.[0]?.delta?.content;
-            if (token) {
-              assistantFullText += token;
-              controller.enqueue(encoder.encode(token));
+            try {
+              const json = JSON.parse(data);
+              const token = json.choices?.[0]?.delta?.content;
+              if (token) {
+                assistantFullText += token;
+                controller.enqueue(encoder.encode(token));
+              }
+            } catch {
+              // Chunk malformé — on ignore
             }
-          } catch {
-            // Ignore malformed chunks
           }
         }
-      }
 
-      if (assistantFullText.trim()) {
-        await addMessage(conversationId, "assistant", assistantFullText);
+        if (assistantFullText.trim()) {
+          await addMessage(conversationId, "assistant", assistantFullText);
+        }
+      } catch (err) {
+        console.error("[Stream] Erreur pendant le streaming:", err);
+      } finally {
+        controller.close();
       }
-
-      controller.close();
     },
   });
 
