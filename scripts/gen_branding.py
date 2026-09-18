@@ -1,3 +1,4 @@
+# scripts/gen_branding.py
 from PIL import Image, ImageDraw, ImageFont
 import os
 

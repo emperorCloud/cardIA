@@ -1,3 +1,4 @@
+//lib/db.ts
 import { neon } from "@neondatabase/serverless";
 
 // DATABASE_URL est injectée automatiquement par l'intégration Neon
