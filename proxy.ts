@@ -19,6 +19,11 @@ export default auth((req) => {
   return NextResponse.next();
 });
 
+// IMPORTANT : "api" est exclu ici. Sans ça, le proxy intercepte aussi
+// /api/auth/callback/credentials, /api/register, etc., et les redirige
+// vers /login en conservant leur méthode POST — ce que la page /login
+// ne sait pas gérer (405). Chaque route API gère déjà son propre
+// contrôle d'authentification via auth() dans son handler.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
 };
