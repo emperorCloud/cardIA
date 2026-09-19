@@ -11,13 +11,16 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
+    "adm-zip": "^0.5.18",
     "bcryptjs": "^2.4.3",
     "next": "16.3.4",
     "next-auth": "^5.0.0-beta.30",
+    "officeparser": "^6.1.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20.14.0",
     "@types/react": "^19.0.0",
