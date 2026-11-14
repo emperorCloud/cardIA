@@ -78,8 +78,11 @@ export async function POST(req: NextRequest) {
     const savedText = imageBase64
       ? `${lastUserMessage.content || "(image envoyée)"} 📎`
       : lastUserMessage.content;
-    await addMessage(conversationId, "user", savedText);
-    await renameConversationIfDefault(conversationId, savedText.slice(0, 60));
+    // En parallèle : gagne un aller-retour base de données avant la réponse.
+    await Promise.all([
+      addMessage(conversationId, "user", savedText),
+      renameConversationIfDefault(conversationId, savedText.slice(0, 60)),
+    ]);
   }
 
   const opened = await openStream({

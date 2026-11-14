@@ -65,6 +65,19 @@ async function* sseLines(body: ReadableStream<Uint8Array>) {
   }
 }
 
+// fetch avec délai maximal pour recevoir la réponse (en-têtes). Une fois la réponse
+// commencée, le flux n'est plus interrompu. Évite qu'un fournisseur lent bloque tout.
+async function fetchT(url: string, init: RequestInit, ms?: number): Promise<Response> {
+  const limit = ms ?? Number(process.env.LLM_CONNECT_TIMEOUT_MS ?? 15000);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), limit);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function classify(status: number, body: string): string {
   const b = body.toLowerCase();
   if (b.includes("api key not valid") || b.includes("api_key_invalid")) return "auth";
@@ -109,7 +122,7 @@ async function openAnthropic(req: LLMRequest, model: string, withSearch: boolean
     body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }];
   }
 
-  return fetch(ANTHROPIC_URL, {
+  return fetchT(ANTHROPIC_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -117,7 +130,7 @@ async function openAnthropic(req: LLMRequest, model: string, withSearch: boolean
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
-  });
+  }, 25000);
 }
 
 async function* anthropicTokens(res: Response): AsyncGenerator<string> {
@@ -203,7 +216,7 @@ async function openGroq(req: LLMRequest, model: string) {
     return { role: m.role, content: m.content };
   });
 
-  return fetch(GROQ_URL, {
+  return fetchT(GROQ_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -211,6 +224,8 @@ async function openGroq(req: LLMRequest, model: string) {
       stream: true,
       temperature: 0.6,
       max_tokens: 4000,
+      // gpt-oss raisonne par défaut : "low" = réponses beaucoup plus rapides
+      ...(model.includes("gpt-oss") ? { reasoning_effort: "low" } : {}),
       messages: [{ role: "system", content: req.system }, ...groqMessages],
     }),
   });
@@ -246,21 +261,39 @@ async function openGemini(req: LLMRequest, model: string, withSearch: boolean) {
   });
 
   // Pas de "temperature" : Google recommande la valeur par défaut pour la série Gemini 3.
-  const body: Record<string, unknown> = {
-    systemInstruction: { parts: [{ text: req.system }] },
-    contents,
-    generationConfig: { maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS ?? 8192) },
+  // IMPORTANT (vitesse) : Gemini 3 "réfléchit" au niveau HAUT par défaut, ce qui retarde
+  // fortement le premier mot. On le baisse ; sur 2.5 Flash on coupe la réflexion.
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS ?? 8192),
   };
-  if (withSearch) body.tools = [{ google_search: {} }];
+  let thinking: Record<string, unknown> | null = null;
+  if (model.startsWith("gemini-3")) {
+    thinking = { thinkingLevel: process.env.GEMINI_THINKING_LEVEL ?? "low" };
+  } else if (model.startsWith("gemini-2.5") && !model.includes("pro")) {
+    thinking = { thinkingBudget: 0 };
+  }
 
-  return fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(body),
-    }
-  );
+  const buildBody = (withThinking: boolean) => {
+    const body: Record<string, unknown> = {
+      systemInstruction: { parts: [{ text: req.system }] },
+      contents,
+      generationConfig:
+        withThinking && thinking ? { ...generationConfig, thinkingConfig: thinking } : generationConfig,
+    };
+    if (withSearch) body.tools = [{ google_search: {} }];
+    return JSON.stringify(body);
+  };
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+  const headers = { "content-type": "application/json", "x-goog-api-key": apiKey };
+
+  let res = await fetchT(url, { method: "POST", headers, body: buildBody(true) });
+  if (res.status === 400 && thinking) {
+    // Réglage de réflexion refusé par ce modèle : on réessaie sans.
+    console.error("[gemini] 400 avec thinkingConfig, nouvel essai sans:", (await res.text().catch(() => "")).slice(0, 300));
+    res = await fetchT(url, { method: "POST", headers, body: buildBody(false) });
+  }
+  return res;
 }
 
 async function* geminiTokens(res: Response): AsyncGenerator<string> {
@@ -308,7 +341,7 @@ function list(value: string | undefined, fallback: string): string[] {
 
 function buildAttempts(req: LLMRequest): Attempt[] {
   const wantSearch = req.webSearch || process.env.WEB_SEARCH_ALWAYS === "true";
-  const order = list(process.env.LLM_PROVIDER_ORDER, "anthropic,gemini,groq") as Provider[];
+  const order = list(process.env.LLM_PROVIDER_ORDER, "gemini,groq") as Provider[];
   const attempts: Attempt[] = [];
 
   for (const provider of order) {
@@ -347,6 +380,8 @@ export async function openStream(req: LLMRequest): Promise<OpenResult> {
   const log: string[] = [];
   const kinds: string[] = [];
   const dead = new Set<string>(); // "fournisseur:modèle" inutile de réessayer
+  const startedAt = Date.now();
+  const budgetMs = Number(process.env.LLM_BUDGET_MS ?? 40000); // on ne lance plus d'essai passé ce délai
 
   if (attempts.length === 0) {
     return {
@@ -360,6 +395,11 @@ export async function openStream(req: LLMRequest): Promise<OpenResult> {
   for (const a of attempts) {
     const key = `${a.provider}:${a.model}`;
     if (dead.has(key)) continue;
+    if (Date.now() - startedAt > budgetMs) {
+      log.push("budget-temps-dépassé");
+      break;
+    }
+    const t0 = Date.now();
 
     try {
       const res =
@@ -369,6 +409,7 @@ export async function openStream(req: LLMRequest): Promise<OpenResult> {
           ? await openGemini(req, a.model, a.search)
           : await openGroq(req, a.model);
 
+      console.log(`[${a.provider}] ${a.model} → HTTP ${res.status} en ${Date.now() - t0} ms`);
       if (res.ok && res.body) {
         const tokens =
           a.provider === "anthropic"
