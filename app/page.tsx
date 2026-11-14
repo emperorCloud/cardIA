@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
 import { LogoMark } from "@/components/LogoMark";
+import { Markdown, stripMarkdown } from "@/components/Markdown";
 
 type Role = "user" | "assistant";
 type Message = {
   role: Role;
   content: string;
   imageUrl?: string; // image générée par Jessy, ou image jointe par l'utilisateur
+  isError?: boolean; // message d'erreur local, jamais renvoyé à l'IA
 };
 type Conversation = { id: string; title: string; created_at: string };
 
@@ -187,14 +189,17 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [...messages, { role: "user", content }],
+          messages: [...messages.filter((m) => !m.isError), { role: "user", content }],
           conversationId,
           webSearch,
           imageBase64: imageForRequest ?? undefined,
         }),
       });
 
-      if (!res.ok || !res.body) throw new Error("Réponse invalide du serveur");
+      if (!res.ok || !res.body) {
+        const serverMsg = (await res.text().catch(() => "")).trim();
+        throw new Error(serverMsg.slice(0, 300) || "Réponse invalide du serveur");
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -214,13 +219,17 @@ export default function Home() {
       }
 
       loadConversations();
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "";
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
+          isError: true,
           content:
-            "Désolé, une erreur est survenue en essayant de vous répondre. Réessayez dans un instant.",
+            detail && detail !== "Failed to fetch"
+              ? `⚠️ ${detail}`
+              : "⚠️ Impossible de joindre le serveur. Vérifiez votre connexion et réessayez.",
         },
       ]);
     } finally {
@@ -332,7 +341,7 @@ export default function Home() {
       return;
     }
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance = new SpeechSynthesisUtterance(stripMarkdown(text));
     utterance.lang = "fr-FR";
     utterance.onend = () => setSpeakingIndex(null);
     utterance.onerror = () => setSpeakingIndex(null);
@@ -460,10 +469,10 @@ export default function Home() {
             {messages.map((m, i) => (
               <div key={i} className={`group flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                  className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     m.role === "user"
-                      ? "bg-cardia-blue text-white"
-                      : "bg-cardia-panel text-white/90"
+                      ? "max-w-[85%] bg-cardia-blue text-white"
+                      : "w-full max-w-full bg-cardia-panel text-white/90"
                   }`}
                 >
                   {m.imageUrl && (
@@ -474,11 +483,15 @@ export default function Home() {
                       className="mb-2 max-h-64 rounded-lg object-cover"
                     />
                   )}
-                  {m.content || (m.role === "assistant" && loading && i === messages.length - 1 ? (
+                  {m.content ? (
+                    m.role === "assistant" ? (
+                      <Markdown content={m.content} />
+                    ) : (
+                      <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                    )
+                  ) : m.role === "assistant" && loading && i === messages.length - 1 ? (
                     <TypingDots />
-                  ) : (
-                    ""
-                  ))}
+                  ) : null}
                 </div>
 
                 {m.content && (

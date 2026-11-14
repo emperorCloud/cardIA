@@ -61,7 +61,7 @@ compte, puis vers le chat.
 3. Ajoute dans **Environment Variables** :
    - `GROQ_API_KEY`
    - `AUTH_SECRET`
-   - `NEXT_PUBLIC_SITE_URL` (ex: `https://cardia.cardit.cm`) — utilisée pour les balises SEO/Open Graph
+   - `NEXT_PUBLIC_SITE_URL` (ex: `https://chat.cardit.cm`) — utilisée pour les balises SEO/Open Graph
 4. **Deploy**
 5. Lance la migration contre la base de production si ce n'est pas déjà fait :
    ```bash
